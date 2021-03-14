@@ -8,6 +8,7 @@ namespace NPoco
         public ColumnAttribute() { }
         public ColumnAttribute(string name) { Name = name; }
         public string Name { get; set; }
-        public bool ForceToUtc { get; set; }
+        public bool ForceToUtc { get; set; } = true;
+        public bool ExactNameMatch { get; set; }
     }
 }

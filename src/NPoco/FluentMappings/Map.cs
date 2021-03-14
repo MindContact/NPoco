@@ -50,8 +50,8 @@ namespace NPoco.FluentMappings
 
         public Map<T> PrimaryKey(Expression<Func<T, object>> column, string sequenceName)
         {
-            var propertyInfo = PropertyHelper<T>.GetProperty(column);
-            return PrimaryKey(propertyInfo.Name, sequenceName);
+            var members = MemberHelper<T>.GetMembers(column);
+            return PrimaryKey(members.Last().Name, sequenceName);
         }
 
         public Map<T> PrimaryKey(Expression<Func<T, object>> column)
@@ -62,8 +62,8 @@ namespace NPoco.FluentMappings
 
         public Map<T> PrimaryKey(Expression<Func<T, object>> column, bool autoIncrement)
         {
-            var propertyInfo = PropertyHelper<T>.GetProperty(column);
-            return PrimaryKey(propertyInfo.Name, autoIncrement);
+            var members = MemberHelper<T>.GetMembers(column);
+            return PrimaryKey(members.Last().Name, autoIncrement);
         }
 
         public Map<T> CompositePrimaryKey(params Expression<Func<T, object>>[] columns)
@@ -71,7 +71,7 @@ namespace NPoco.FluentMappings
             var columnNames = new string[columns.Length];
             for (int i = 0; i < columns.Length; i++)
             {
-                columnNames[i] = PropertyHelper<T>.GetProperty(columns[i]).Name;
+                columnNames[i] = MemberHelper<T>.GetMembers(columns[i]).Last().Name;
             }
 
             _petaPocoTypeDefinition.PrimaryKey = string.Join(",", columnNames);
@@ -85,6 +85,14 @@ namespace NPoco.FluentMappings
             return this;
         }
 
+        public Map<T> PrimaryKey(string primaryKeyColumn, bool autoIncrement, bool useOutputClause)
+        {
+            _petaPocoTypeDefinition.PrimaryKey = primaryKeyColumn;
+            _petaPocoTypeDefinition.AutoIncrement = autoIncrement;
+            _petaPocoTypeDefinition.UseOutputClause = useOutputClause;
+            return this;
+        }
+
         public Map<T> PrimaryKey(string primaryKeyColumn, string sequenceName)
         {
             _petaPocoTypeDefinition.PrimaryKey = primaryKeyColumn;
@@ -92,10 +100,29 @@ namespace NPoco.FluentMappings
             return this;
         }
 
+        public Map<T> PrimaryKey(string primaryKeyColumn, string sequenceName, bool useOutputClause)
+        {
+            _petaPocoTypeDefinition.PrimaryKey = primaryKeyColumn;
+            _petaPocoTypeDefinition.SequenceName = sequenceName;
+            _petaPocoTypeDefinition.UseOutputClause = useOutputClause;
+            return this;
+        }
+
         public Map<T> PrimaryKey(string primaryKeyColumn)
         {
             return PrimaryKey(primaryKeyColumn, null);
         }
+
+        public Map<T> PersistedType<TPersistedType>()
+        {
+            return PersistedType(typeof (TPersistedType));
+        }
+        
+        public Map<T> PersistedType(Type type)
+        {
+            _petaPocoTypeDefinition.PersistedType = type;
+            return this;
+        }   
 
         TypeDefinition IMap.TypeDefinition
         {

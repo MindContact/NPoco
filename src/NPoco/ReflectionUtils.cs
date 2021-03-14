@@ -2,6 +2,8 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
+using NPoco.RowMappers;
 
 namespace NPoco
 {
@@ -14,10 +16,18 @@ namespace NPoco
 
         public static List<MemberInfo> GetFieldsAndPropertiesForClasses(Type type)
         {
-            if (type.IsValueType || type == typeof(string) || type == typeof(byte[]) || type == typeof(Dictionary<string, object>) || type.IsArray)
+            if (type.GetTypeInfo().IsValueType || type == typeof(string) || type == typeof(byte[]) || type == typeof(Dictionary<string, object>) || type.IsArray)
                 return new List<MemberInfo>();
 
             return GetFieldsAndProperties(type);
+        }
+
+        public static List<MemberInfo> GetPrivatePropertiesForClasses(Type type)
+        {
+            if (type.GetTypeInfo().IsValueType || type == typeof(string) || type == typeof(byte[]) || type == typeof(Dictionary<string, object>) || type.IsArray)
+                return new List<MemberInfo>();
+
+            return GetFieldsAndProperties(type, BindingFlags.Instance | BindingFlags.NonPublic);
         }
 
         public static List<MemberInfo> GetFieldsAndProperties(Type type)
@@ -29,7 +39,7 @@ namespace NPoco
         {
             List<MemberInfo> targetMembers = new List<MemberInfo>();
 
-            targetMembers.AddRange(type.GetFields(bindingAttr).Where(x=>!x.IsInitOnly).ToArray());
+            targetMembers.AddRange(type.GetFields(bindingAttr).Where(x => !x.IsInitOnly).ToArray());
             targetMembers.AddRange(type.GetProperties(bindingAttr));
 
             return targetMembers;
@@ -40,32 +50,24 @@ namespace NPoco
             Type type;
             if (member is FieldInfo)
                 type = ((FieldInfo) member).FieldType;
-            else
+            else if (member is PropertyInfo)
                 type = ((PropertyInfo) member).PropertyType;
+            else if (member == null)
+                type = typeof (object);
+            else
+                throw new NotSupportedException();
+
             return type;
+        }
+
+        public static bool IsDynamic(this MemberInfo member)
+        {
+            return member.GetCustomAttributes(typeof(DynamicAttribute), true).Any();
         }
 
         public static bool IsField(this MemberInfo member)
         {
             return member is FieldInfo;
-        }
-
-        public static object GetMemberInfoValue(this MemberInfo member, object obj)
-        {
-            object val;
-            if (member is FieldInfo)
-                val = ((FieldInfo)member).GetValue(obj);
-            else
-                val = ((PropertyInfo)member).GetValue(obj, null);
-            return val;
-        }
-
-        public static void SetMemberInfoValue(this MemberInfo member, object obj, object value)
-        {
-            if (member is FieldInfo)
-                ((FieldInfo)member).SetValue(obj, value);
-            else
-                ((PropertyInfo)member).SetValue(obj, value, null);
         }
 
         public static MethodInfo GetSetMethodOnDeclaringType(this PropertyInfo propertyInfo)
@@ -86,7 +88,7 @@ namespace NPoco
         {
             foreach (var t in type.GetInterfaces())
             {
-                if (t.IsGenericType && t.GetGenericTypeDefinition() == genericTypeDefinition)
+                if (t.GetTypeInfo().IsGenericType && t.GetGenericTypeDefinition() == genericTypeDefinition)
                 {
                     return t;
                 }
@@ -105,10 +107,10 @@ namespace NPoco
         {
             while (type != null)
             {
-                if (type.IsGenericType)
+                if (type.GetTypeInfo().IsGenericType)
                     return type;
 
-                type = type.BaseType;
+                type = type.GetTypeInfo().BaseType;
             }
             return null;
         }
@@ -124,6 +126,41 @@ namespace NPoco
             }
 
             return null;
+        }
+
+        public static bool IsOfGenericType(this Type instanceType, Type genericType)
+        {
+            Type type = instanceType;
+            while (type != null)
+            {
+                if (type.GetTypeInfo().IsGenericType &&
+                    type.GetGenericTypeDefinition() == genericType)
+                {
+                    return true;
+                }
+                type = type.GetTypeInfo().BaseType;
+            }
+
+            foreach (var i in instanceType.GetInterfaces())
+            {
+                if (i.GetTypeInfo().IsGenericType && i.GetGenericTypeDefinition() == genericType)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        public static IEnumerable<Attribute> GetCustomAttributes(MemberInfo memberInfo)
+        {
+            var attrs = memberInfo.GetCustomAttributes();
+            return attrs;
+        }
+
+        public static IEnumerable<Attribute> GetCustomAttributes(MemberInfo memberInfo, Type type)
+        {
+            var attrs = memberInfo.GetCustomAttributes(type);
+            return attrs;
         }
     }
 }

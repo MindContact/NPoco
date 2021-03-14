@@ -1,8 +1,10 @@
 
 using System;
 using System.Data;
+using System.Data.Common;
 using System.Text;
 using NPoco.Expressions;
+using System.Threading.Tasks;
 
 namespace NPoco.DatabaseTypes
 {
@@ -13,19 +15,19 @@ namespace NPoco.DatabaseTypes
             return "@";
         }
 
-        public override void PreExecute(IDbCommand cmd)
+        public override void PreExecute(DbCommand cmd)
         {
             cmd.CommandText = cmd.CommandText.Replace("/*poco_dual*/", "from RDB$DATABASE");
         }
 
         public override string EscapeTableName(string tableName)
         {
-            return tableName;
+            return  $"\"{tableName}\"";
         }
 
         public override string EscapeSqlIdentifier(string str)
         {
-            return str;
+            return $"\"{str}\"";
         }
 
         public override string BuildPageQuery(long skip, long take, PagingHelper.SQLParts parts, ref object[] args)
@@ -43,22 +45,29 @@ namespace NPoco.DatabaseTypes
         }
 
 
-        public override string GetDefaultInsertSql(string tableName, string[] names, string[] parameters)
+        public override string GetDefaultInsertSql(string tableName, string primaryKeyName, bool useOutputClause, string[] names, string[] parameters)
         {
             return string.Format("INSERT INTO {0} ({1}) VALUES ({2})", EscapeTableName(tableName), string.Join(",", names), string.Join(",", parameters));
         }
 
-        public override object ExecuteInsert<T>(Database db, IDbCommand cmd, string primaryKeyName, T poco, object[] args)
+
+        private DbParameter AdjustSqlInsertCommandText(DbCommand cmd, string primaryKeyName)
+        {
+            cmd.CommandText += string.Format(" returning {0}", EscapeSqlIdentifier(primaryKeyName));
+            var param = cmd.CreateParameter();
+            param.ParameterName = primaryKeyName;
+            param.Value = DBNull.Value;
+            param.Direction = ParameterDirection.ReturnValue;
+            param.DbType = DbType.Int64;
+            cmd.Parameters.Add(param);
+            return param;
+        }
+
+        public override object ExecuteInsert<T>(Database db, DbCommand cmd, string primaryKeyName, bool useOutputClause, T poco, object[] args)
         {
             if (primaryKeyName != null)
             {
-                cmd.CommandText += string.Format(" returning {0}", EscapeSqlIdentifier(primaryKeyName));
-                var param = cmd.CreateParameter();
-                param.ParameterName = primaryKeyName;
-                param.Value = DBNull.Value;
-                param.Direction = ParameterDirection.ReturnValue;
-                param.DbType = DbType.Int64;
-                cmd.Parameters.Add(param);
+                var param = AdjustSqlInsertCommandText(cmd, primaryKeyName);
                 db.ExecuteNonQueryHelper(cmd);
                 return param.Value;
             }
@@ -67,9 +76,22 @@ namespace NPoco.DatabaseTypes
             return -1;
         }
 
-        public override SqlExpression<T> ExpressionVisitor<T>(IDatabase db, bool prefixTableName)
+        public override async Task<object> ExecuteInsertAsync<T>(Database db, DbCommand cmd, string primaryKeyName, bool useOutputClause, T poco, object[] args)
         {
-            return new FirebirdSqlExpression<T>(db, prefixTableName);
+            if (primaryKeyName != null)
+            {
+                var param = AdjustSqlInsertCommandText(cmd, primaryKeyName);
+                await db.ExecuteNonQueryHelperAsync(cmd).ConfigureAwait(false);
+                return param.Value;
+            }
+
+            await db.ExecuteNonQueryHelperAsync(cmd).ConfigureAwait(false);
+            return -1;
+        }
+
+        public override SqlExpression<T> ExpressionVisitor<T>(IDatabase db, PocoData pocoData, bool prefixTableName)
+        {
+            return new FirebirdSqlExpression<T>(db, pocoData, prefixTableName);
         }
 
         public override string GetProviderName()

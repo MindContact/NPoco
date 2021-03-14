@@ -14,13 +14,13 @@ namespace NPoco.FluentMappings
 
         public void OverrideMappingsWith(Mappings mappings)
         {
-            _scannerSettings.MappingOverrides = mappings;
+            _scannerSettings.MappingOverrides.Add(mappings);
         }
 
         public void OverrideMappingsWith(params IMap[] maps)
         {
             var mappings = Mappings.BuildMappingsFromMaps(maps);
-            _scannerSettings.MappingOverrides = mappings;
+            _scannerSettings.MappingOverrides.Add(mappings);
         }
 
         public void Assembly(Assembly assembly)
@@ -51,6 +51,16 @@ namespace NPoco.FluentMappings
         public void SequencesNamed(Func<Type, string> sequencesFunc)
         {
             _scannerSettings.SequencesNamed = sequencesFunc;
+        }
+
+        public void PersistedTypesBy(Func<Type, Type> persistedTypesByFunc)
+        {
+            _scannerSettings.PersistedTypesBy = persistedTypesByFunc;
+        }
+
+        public void MapNestedTypesWhen(Func<Type, bool> mapNestedTypesFunc)
+        {
+            _scannerSettings.MapNestedTypesWhen = mapNestedTypesFunc;
         }
 
         public void LazyLoadMappings()

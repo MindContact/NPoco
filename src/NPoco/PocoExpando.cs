@@ -4,20 +4,45 @@ using System.Collections.Generic;
 
 namespace NPoco
 {
-    #if !POCO_NO_DYNAMIC
-    public class PocoExpando : System.Dynamic.DynamicObject, IDictionary<string, object>
+    public class PocoExpando : System.Dynamic.DynamicObject, IDictionary<string, object>, IDictionary
     {
         private readonly IDictionary<string, object> Dictionary =
-            new Dictionary<string, object>(StringComparer.InvariantCultureIgnoreCase);
+            new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
 
         public void Add(KeyValuePair<string, object> item)
         {
             Dictionary.Add(item);
         }
 
+        public bool Contains(object key)
+        {
+            return ((IDictionary)Dictionary).Contains(key);
+        }
+
+        public void Add(object key, object value)
+        {
+            ((IDictionary)Dictionary).Add(key, value);
+        }
+
         public void Clear()
         {
             Dictionary.Clear();
+        }
+
+        IDictionaryEnumerator IDictionary.GetEnumerator()
+        {
+            return ((IDictionary)Dictionary).GetEnumerator();
+        }
+
+        public void Remove(object key)
+        {
+            ((IDictionary)Dictionary).Remove(key);
+        }
+
+        public object this[object key]
+        {
+            get => ((IDictionary)Dictionary)[key];
+            set => ((IDictionary)Dictionary)[key] = value;
         }
 
         public bool Contains(KeyValuePair<string, object> item)
@@ -35,15 +60,27 @@ namespace NPoco
             return Dictionary.Remove(item);
         }
 
+        public void CopyTo(Array array, int index)
+        {
+            ((IDictionary)Dictionary).CopyTo(array, index);
+        }
+
         public int Count
         {
             get { return this.Dictionary.Keys.Count; }
         }
 
+        public object SyncRoot => ((IDictionary)Dictionary).SyncRoot;
+        public bool IsSynchronized => ((IDictionary)Dictionary).IsSynchronized;
+
+        ICollection IDictionary.Values => ((IDictionary)Dictionary).Values;
+
         public bool IsReadOnly
         {
             get { return Dictionary.IsReadOnly; }
         }
+
+        public bool IsFixedSize => ((IDictionary)Dictionary).IsFixedSize;
 
         public override bool TryGetMember(System.Dynamic.GetMemberBinder binder, out object result)
         {
@@ -126,10 +163,11 @@ namespace NPoco
             get { return Dictionary.Keys; }
         }
 
+        ICollection IDictionary.Keys => ((IDictionary)Dictionary).Keys;
+
         public ICollection<object> Values
         {
             get { return Dictionary.Values; }
         }
     }
-    #endif
 }

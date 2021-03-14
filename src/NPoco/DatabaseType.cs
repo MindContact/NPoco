@@ -2,28 +2,31 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.Data;
+using System.Data.Common;
 using System.Linq;
 using NPoco.DatabaseTypes;
 using NPoco.Expressions;
-using NPoco.Linq;
+using System.Reflection;
+using System.Threading.Tasks;
+using System.Text;
 
 namespace NPoco
 {
     /// <summary>
     /// Base class for DatabaseType handlers - provides default/common handling for different database engines
     /// </summary>
-    public abstract class DatabaseType
+    public abstract partial class DatabaseType
     {
         // Helper Properties
-        public static DatabaseType SqlServer2012 { get { return Singleton<SqlServer2012DatabaseType>.Instance; } }
-        public static DatabaseType SqlServer2008 { get { return Singleton<SqlServer2008DatabaseType>.Instance; } }
-        public static DatabaseType SqlServer2005 { get { return Singleton<SqlServerDatabaseType>.Instance; } }
+        public static DatabaseType SqlServer2012 { get { return DynamicDatabaseType.MakeSqlServerType("SqlServer2012DatabaseType"); } }
+        public static DatabaseType SqlServer2008 { get { return DynamicDatabaseType.MakeSqlServerType("SqlServer2008DatabaseType"); } }
+        public static DatabaseType SqlServer2005 { get { return DynamicDatabaseType.MakeSqlServerType("SqlServerDatabaseType"); } }
         public static DatabaseType PostgreSQL { get { return Singleton<PostgreSQLDatabaseType>.Instance; } }
         public static DatabaseType Oracle { get { return Singleton<OracleDatabaseType>.Instance; } }
         public static DatabaseType OracleManaged { get { return Singleton<OracleManagedDatabaseType>.Instance; } }
         public static DatabaseType MySQL { get { return Singleton<MySqlDatabaseType>.Instance; } }
         public static DatabaseType SQLite { get { return Singleton<SQLiteDatabaseType>.Instance; } }
-        public static DatabaseType SQLCe { get { return Singleton<SqlServerCEDatabaseType>.Instance; } }
+        public static DatabaseType SQLCe { get { return DynamicDatabaseType.MakeSqlServerType("SqlServerCEDatabaseType"); } }
         public static DatabaseType Firebird { get { return Singleton<FirebirdDatabaseType>.Instance; } }
 
         readonly Dictionary<Type, DbType> typeMap;
@@ -31,7 +34,7 @@ namespace NPoco
         public DatabaseType()
         {
             typeMap = new Dictionary<Type, DbType>();
-            typeMap[typeof(byte)] = DbType.Byte;
+            typeMap[typeof(byte)] = DbType.Byte; 
             typeMap[typeof(sbyte)] = DbType.SByte;
             typeMap[typeof(short)] = DbType.Int16;
             typeMap[typeof(ushort)] = DbType.UInt16;
@@ -73,7 +76,7 @@ namespace NPoco
         /// <summary>
         /// Configire the specified type to be mapped to a given db-type
         /// </summary>
-        protected void AddTypeMap(Type type, DbType dbType)
+        public void AddTypeMap(Type type, DbType dbType)
         {
             typeMap[type] = dbType;
         }
@@ -84,7 +87,7 @@ namespace NPoco
             DbType dbType;
             var nullUnderlyingType = Nullable.GetUnderlyingType(type);
             if (nullUnderlyingType != null) type = nullUnderlyingType;
-            if (type.IsEnum && !typeMap.ContainsKey(type))
+            if (type.GetTypeInfo().IsEnum && !typeMap.ContainsKey(type))
             {
                 type = Enum.GetUnderlyingType(type);
             }
@@ -128,10 +131,10 @@ namespace NPoco
         }
 
         /// <summary>
-        /// Called immediately before a command is executed, allowing for modification of the IDbCommand before it's passed to the database provider
+        /// Called immediately before a command is executed, allowing for modification of the DbCommand before it's passed to the database provider
         /// </summary>
         /// <param name="cmd"></param>
-        public virtual void PreExecute(IDbCommand cmd)
+        public virtual void PreExecute(DbCommand cmd)
         {
         }
 
@@ -202,7 +205,7 @@ namespace NPoco
         /// <param name="primaryKeyName">The primary key of the row being inserted.</param>
         /// <returns>An expression describing how to return the new primary key value</returns>
         /// <remarks>See the SQLServer database provider for an example of how this method is used.</remarks>
-        public virtual string GetInsertOutputClause(string primaryKeyName)
+        public virtual string GetInsertOutputClause(string primaryKeyName, bool useOutputClause)
         {
             return string.Empty;
         }
@@ -213,20 +216,35 @@ namespace NPoco
         /// <param name="db">The calling Database object</param>
         /// <param name="cmd">The insert command to be executed</param>
         /// <param name="primaryKeyName">The primary key of the table being inserted into</param>
+        /// <param name="useOutputClause"></param>
         /// <param name="poco"></param>
         /// <param name="args"></param>
         /// <returns>The ID of the newly inserted record</returns>
-        public virtual object ExecuteInsert<T>(Database db, IDbCommand cmd, string primaryKeyName, T poco1, object[] args)
+        public virtual object ExecuteInsert<T>(Database db, DbCommand cmd, string primaryKeyName, bool useOutputClause, T poco, object[] args)
         {
             cmd.CommandText += ";\nSELECT @@IDENTITY AS NewID;";
             return db.ExecuteScalarHelper(cmd);
         }
 
-        public virtual void InsertBulk<T>(IDatabase db, IEnumerable<T> pocos)
+        public virtual async Task<object> ExecuteInsertAsync<T>(Database db, DbCommand cmd, string primaryKeyName, bool useOutputClause, T poco, object[] args)
+        {
+            cmd.CommandText += ";\nSELECT @@IDENTITY AS NewID;";
+            return await db.ExecuteScalarHelperAsync(cmd).ConfigureAwait(false);
+        }
+
+        public virtual void InsertBulk<T>(IDatabase db, IEnumerable<T> pocos, InsertBulkOptions options)
         {
             foreach (var poco in pocos)
             {
                 db.Insert(poco);
+            }
+        }
+
+        public virtual async Task InsertBulkAsync<T>(IDatabase db, IEnumerable<T> pocos, InsertBulkOptions options)
+        {
+            foreach (var poco in pocos)
+            {
+                await db.InsertAsync(poco).ConfigureAwait(false);
             }
         }
 
@@ -242,7 +260,7 @@ namespace NPoco
             if (typeName.StartsWith("MySql"))
                 return Singleton<MySqlDatabaseType>.Instance;
             if (typeName.StartsWith("SqlCe"))
-                return Singleton<SqlServerCEDatabaseType>.Instance;
+                return DynamicDatabaseType.MakeSqlServerType("SqlServerCEDatabaseType");
             if (typeName.StartsWith("Npgsql") || typeName.StartsWith("PgSql"))
                 return Singleton<PostgreSQLDatabaseType>.Instance;
             if (typeName.StartsWith("OracleManaged"))
@@ -252,34 +270,34 @@ namespace NPoco
             if (typeName.StartsWith("SQLite"))
                 return Singleton<SQLiteDatabaseType>.Instance;
             if (typeName.StartsWith("SqlConnection"))
-                return Singleton<SqlServerDatabaseType>.Instance;
+                return DynamicDatabaseType.MakeSqlServerType("SqlServerDatabaseType");
             if (typeName.StartsWith("Fb") || typeName.StartsWith("Firebird"))
                 return Singleton<FirebirdDatabaseType>.Instance;
 
             if (!string.IsNullOrEmpty(providerName))
             {
                 // Try again with provider name
-                if (providerName.IndexOf("MySql", StringComparison.InvariantCultureIgnoreCase) >= 0)
+                if (providerName.IndexOf("MySql", StringComparison.OrdinalIgnoreCase) >= 0)
                     return Singleton<MySqlDatabaseType>.Instance;
-                if (providerName.IndexOf("SqlServerCe", StringComparison.InvariantCultureIgnoreCase) >= 0)
-                    return Singleton<SqlServerCEDatabaseType>.Instance;
-                if (providerName.IndexOf("pgsql", StringComparison.InvariantCultureIgnoreCase) >= 0)
+                if (providerName.IndexOf("SqlServerCe", StringComparison.OrdinalIgnoreCase) >= 0)
+                    return DynamicDatabaseType.MakeSqlServerType("SqlServerCEDatabaseType");
+                if (providerName.IndexOf("pgsql", StringComparison.OrdinalIgnoreCase) >= 0)
                     return Singleton<PostgreSQLDatabaseType>.Instance;
-                if (providerName.IndexOf("Oracle.DataAccess", StringComparison.InvariantCultureIgnoreCase) >= 0)
+                if (providerName.IndexOf("Oracle.DataAccess", StringComparison.OrdinalIgnoreCase) >= 0)
                     return Singleton<OracleDatabaseType>.Instance;
-                if (providerName.IndexOf("Oracle.ManagedDataAccess", StringComparison.InvariantCultureIgnoreCase) >= 0)
+                if (providerName.IndexOf("Oracle.ManagedDataAccess", StringComparison.OrdinalIgnoreCase) >= 0)
                     return Singleton<OracleManagedDatabaseType>.Instance;
-                if (providerName.IndexOf("SQLite", StringComparison.InvariantCultureIgnoreCase) >= 0)
+                if (providerName.IndexOf("SQLite", StringComparison.OrdinalIgnoreCase) >= 0)
                     return Singleton<SQLiteDatabaseType>.Instance;
-                if (providerName.IndexOf("Firebird", StringComparison.InvariantCultureIgnoreCase) >= 0)
+                if (providerName.IndexOf("Firebird", StringComparison.OrdinalIgnoreCase) >= 0)
                     return Singleton<FirebirdDatabaseType>.Instance;
             }
 
             // Assume SQL Server
-            return Singleton<SqlServerDatabaseType>.Instance;
+            return DynamicDatabaseType.MakeSqlServerType("SqlServerDatabaseType");
         }
 
-        public virtual string GetDefaultInsertSql(string tableName, string[] names, string[] parameters)
+        public virtual string GetDefaultInsertSql(string tableName, string primaryKeyName, bool useOutputClause, string[] names, string[] parameters)
         {
             return string.Format("INSERT INTO {0} DEFAULT VALUES", EscapeTableName(tableName));
         }
@@ -313,19 +331,82 @@ namespace NPoco
             }
         }
 
-        public SqlExpression<T> ExpressionVisitor<T>(IDatabase db)
+        public SqlExpression<T> ExpressionVisitor<T>(IDatabase db, PocoData pocoData)
         {
-            return ExpressionVisitor<T>(db, false);
+            return ExpressionVisitor<T>(db, pocoData, false);
         }
 
-        public virtual SqlExpression<T> ExpressionVisitor<T>(IDatabase db, bool prefixTableName)
+        public virtual SqlExpression<T> ExpressionVisitor<T>(IDatabase db, PocoData pocoData, bool prefixTableName)
         {
-            return new DefaultSqlExpression<T>(db, prefixTableName);
+            return new DefaultSqlExpression<T>(db, pocoData, prefixTableName);
         }
 
         public virtual string GetProviderName()
         {
-            return "System.Data.SqlClient";
+            return "Microsoft.Data.SqlClient";
+        }
+
+        public virtual Task<int> ExecuteNonQueryAsync(Database database, DbCommand cmd)
+        {
+            return cmd.ExecuteNonQueryAsync();
+        }
+
+        public virtual Task<object> ExecuteScalarAsync(Database database, DbCommand cmd)
+        {
+            return cmd.ExecuteScalarAsync();
+        }
+
+        public virtual Task<DbDataReader> ExecuteReaderAsync(Database database, DbCommand cmd)
+        {
+            return cmd.ExecuteReaderAsync();
+        }
+
+        public virtual object ProcessDefaultMappings(PocoColumn pocoColumn, object value)
+        {
+            return value;
+        }
+
+        internal class FormattedParameter
+        {
+            public Type Type { get; set; }
+            public object Value { get; set; }
+            public DbParameter Parameter { get; set; }
+        }
+
+        public virtual string FormatCommand(DbCommand cmd)
+        {
+            var parameters = cmd.Parameters.Cast<DbParameter>().Select(parameter => new FormattedParameter()
+            {
+                Type = parameter.Value.GetTheType(),
+                Value = parameter.Value,
+                Parameter = parameter
+            });
+            return FormatCommand(cmd.CommandText, parameters.Cast<object>().ToArray());
+        }
+
+        public virtual string FormatCommand(string sql, object[] args)
+        {            
+            if (sql == null)
+                return "";
+            var sb = new StringBuilder();
+            sb.Append(sql);
+            if (args != null && args.Length > 0)
+            {
+                sb.Append("\n");
+                for (int i = 0; i < args.Length; i++)
+                {
+                    var type = args[i] != null ? args[i].GetType().Name : string.Empty;
+                    var value = args[i];
+                    if (args[i] is FormattedParameter formatted)
+                    {
+                        type = formatted.Type != null ? formatted.Type.Name : string.Format("{0}, {1}", formatted.Parameter.GetType().Name, formatted.Parameter.DbType);
+                        value = formatted.Value;
+                    }
+                    sb.AppendFormat("\t -> {0}{1} [{2}] = \"{3}\"\n", GetParameterPrefix(string.Empty), i, type, value);
+                }
+                sb.Remove(sb.Length - 1, 1);
+            }
+            return sb.ToString();
         }
 
     }

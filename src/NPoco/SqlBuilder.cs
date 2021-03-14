@@ -30,11 +30,11 @@ namespace NPoco
                 this.postfix = postfix;
             }
 
-            public string ResolveClauses(List<object> finalParams)
+            public string ResolveClauses(List<object> finalParams, bool reuseParameters)
             {
                 foreach (var item in this)
                 {
-                    item.ResolvedSql = ParameterHelper.ProcessParams(item.Sql, item.Parameters.ToArray(), finalParams);
+                    item.ResolvedSql = ParameterHelper.ProcessParams(item.Sql, item.Parameters.ToArray(), finalParams, reuseParameters);
                 }
                 return prefix + string.Join(joiner, this.Select(c => c.ResolvedSql).ToArray()) + postfix;
             }
@@ -43,7 +43,7 @@ namespace NPoco
         public class Template
         {
             public bool TokenReplacementRequired { get; set; }
-            
+
             readonly string sql;
             readonly SqlBuilder builder;
             private List<object> finalParams = new List<object>();
@@ -51,11 +51,11 @@ namespace NPoco
 
             public Template(SqlBuilder builder, string sql, params object[] parameters)
             {
-                this.sql = ParameterHelper.ProcessParams(sql, parameters, finalParams);
                 this.builder = builder;
+                this.sql = ParameterHelper.ProcessParams(sql, parameters, finalParams, builder.ReuseParameters);
             }
 
-            static Regex regex = new Regex(@"\/\*\*.+\*\*\/", RegexOptions.Compiled | RegexOptions.Multiline);
+            static Regex regex = new Regex(@"(\/\*\*[^*/]+\*\*\/)", RegexOptions.Compiled | RegexOptions.Multiline);
 
             void ResolveSql()
             {
@@ -64,7 +64,7 @@ namespace NPoco
                     rawSql = sql;
                     foreach (var pair in builder.data)
                     {
-                        rawSql = rawSql.Replace("/**" + pair.Key + "**/", pair.Value.ResolveClauses(finalParams));
+                        rawSql = rawSql.Replace("/**" + pair.Key + "**/", pair.Value.ResolveClauses(finalParams, builder.ReuseParameters));
                     }
 
                     ReplaceDefaults();
@@ -81,22 +81,49 @@ namespace NPoco
 
             private void ReplaceDefaults()
             {
-                foreach (var pair in builder.defaultsIfEmpty)
+                if (TokenReplacementRequired)
                 {
-                    var fullToken = "/**" + pair.Key + "**/";
-                    if (TokenReplacementRequired)
+                    foreach (var pair in builder.defaultsIfEmpty)
                     {
-                        if (rawSql.Contains(fullToken))
+                        var fullToken = GetFullTokenRegexPattern(pair.Key);
+                        if (Regex.IsMatch(rawSql, fullToken))
                         {
-                            throw new Exception(string.Format("Token '{0}' not used. All tokens must be replaced if TokenReplacementRequired switched on.", fullToken));
+                            throw new Exception(string.Format("Token '{0}' not used. All tokens must be replaced if TokenReplacementRequired switched on.",fullToken));
+                        }
+                    }
+                }
+
+                rawSql = regex.Replace(rawSql, x =>
+                {
+                    var token = x.Groups[1].Value;
+                    var found = false;
+
+                    foreach (var pair in builder.defaultsIfEmpty)
+                    {
+                        var fullToken = GetFullTokenRegexPattern(pair.Key);
+                        if (Regex.IsMatch(token, fullToken))
+                        {
+                            if (pair.Value != null)
+                            {
+                                token = Regex.Replace(token, fullToken, " " + pair.Value + " ");
+                            }
+                            found = true;
+                            break;
                         }
                     }
 
-                    rawSql = rawSql.Replace(fullToken, " " + pair.Value + " ");
-                }
+                    if (!found)
+                    {
+                        token = string.Empty;
+                    }
 
-                // replace all that is left with empty
-                rawSql = regex.Replace(rawSql, "");
+                    return token;
+                });
+            }
+
+            private static string GetFullTokenRegexPattern(string key)
+            {
+                return @"/\*\*" + key + @"\*\*/";
             }
 
             string rawSql;
@@ -105,9 +132,26 @@ namespace NPoco
             public object[] Parameters { get { ResolveSql(); return finalParams.ToArray(); } }
         }
 
+        public bool ReuseParameters { get; set; }
 
+        /// <summary>
+        /// Initialises the SqlBuilder
+        /// </summary>
         public SqlBuilder()
         {
+        }
+
+        /// <summary>
+        /// Initialises the SqlBuilder with default replacement overrides
+        /// </summary>
+        /// <param name="defaultOverrides">A dictionary of token overrides. A value null means the token will not be replaced.</param>
+        /// <example>
+        /// { "where", "1=1" }
+        /// { "where(name)", "1!=1" }
+        /// </example>
+        public SqlBuilder(Dictionary<string, string> defaultOverrides)
+        {
+            defaultsIfEmpty.InsertRange(0, defaultOverrides.Select(x => new KeyValuePair<string, string>(Regex.Escape(x.Key), x.Value)));
         }
 
         public Template AddTemplate(string sql, params object[] parameters)
@@ -115,7 +159,16 @@ namespace NPoco
             return new Template(this, sql, parameters);
         }
 
-        void AddClause(string name, string sql, object[] parameters, string joiner, string prefix, string postfix)
+        /// <summary>
+        /// Adds a new SQL clause.  Also internally used by all other methods like Select, Where, Order, ...
+        /// </summary>
+        /// <param name="name">lower case name of the clause (eg select, where, ...) </param>
+        /// <param name="sql"></param>
+        /// <param name="parameters">for the sql string</param>
+        /// <param name="joiner">The string which will be used to join multiple parts of the same clause. Remember to add whitespace before and after.</param>
+        /// <param name="prefix"></param>
+        /// <param name="postfix"></param>
+        public void AddClause(string name, string sql, object[] parameters, string joiner, string prefix, string postfix)
         {
             Clauses clauses;
             if (!data.TryGetValue(name, out clauses))
@@ -127,12 +180,13 @@ namespace NPoco
             seq++;
         }
 
-        readonly Dictionary<string, string> defaultsIfEmpty = new Dictionary<string, string>
+        readonly List<KeyValuePair<string, string>> defaultsIfEmpty = new List<KeyValuePair<string, string>>()
         {
-            { "where", "1=1" },
-            { "select", "1" }
+            new KeyValuePair<string, string>(@"where\([\w]+\)", "1=1"),
+            new KeyValuePair<string, string>("where", "1=1"),
+            new KeyValuePair<string, string>("select", "1")
         };
-
+        
         /// <summary>
         /// Replaces the Select columns. Uses /**select**/
         /// </summary>
@@ -165,7 +219,16 @@ namespace NPoco
         /// </summary>
         public SqlBuilder Where(string sql, params object[] parameters)
         {
-            AddClause("where", sql, parameters, " AND ", " ( ", " )\n");
+            AddClause("where", "( " + sql + " )", parameters, " AND ", "", "\n");
+            return this;
+        }
+
+        /// <summary>
+        /// Adds a named filter. The Where keyword still needs to be specified. Uses /**where(name)**/
+        /// </summary>
+        public SqlBuilder WhereNamed(string name, string sql, params object[] parameters)
+        {
+            AddClause("where(" + name + ")", "( " + sql + " )", parameters, " AND ", "", "\n");
             return this;
         }
 

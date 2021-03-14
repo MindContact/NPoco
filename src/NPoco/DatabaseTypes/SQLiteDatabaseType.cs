@@ -1,4 +1,7 @@
+using System;
 using System.Data;
+using System.Data.Common;
+using System.Threading.Tasks;
 
 namespace NPoco.DatabaseTypes
 {
@@ -12,15 +15,32 @@ namespace NPoco.DatabaseTypes
             return base.MapParameterValue(value);
         }
 
-        public override object ExecuteInsert<T>(Database db, IDbCommand cmd, string primaryKeyName, T poco, object[] args)
+        private void AdjustSqlInsertCommandText(DbCommand cmd)
+        {
+            cmd.CommandText += ";\nSELECT last_insert_rowid();";
+        }
+
+        public override object ExecuteInsert<T>(Database db, DbCommand cmd, string primaryKeyName, bool useOutputClause, T poco, object[] args)
         {
             if (primaryKeyName != null)
             {
-                cmd.CommandText += ";\nSELECT last_insert_rowid();";
+                AdjustSqlInsertCommandText(cmd);
                 return db.ExecuteScalarHelper(cmd);
             }
 
             db.ExecuteNonQueryHelper(cmd);
+            return -1;
+        }
+
+        public override async Task<object> ExecuteInsertAsync<T>(Database db, DbCommand cmd, string primaryKeyName, bool useOutputClause, T poco, object[] args)
+        {
+            if (primaryKeyName != null)
+            {
+                AdjustSqlInsertCommandText(cmd);
+                return await db.ExecuteScalarHelperAsync(cmd).ConfigureAwait(false);
+            }
+
+            await db.ExecuteNonQueryHelperAsync(cmd).ConfigureAwait(false);
             return -1;
         }
 

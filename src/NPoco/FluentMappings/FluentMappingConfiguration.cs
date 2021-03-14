@@ -8,12 +8,12 @@ namespace NPoco.FluentMappings
 {
     public class FluentConfig
     {
-        public FluentConfig(Func<IMapper, PocoDataFactory> config)
+        public FluentConfig(Func<MapperCollection, FluentPocoDataFactory> config)
         {
             Config = config;
         }
 
-        public Func<IMapper, PocoDataFactory> Config { get; private set; }
+        public Func<MapperCollection, FluentPocoDataFactory> Config { get; private set; }
     }
 
     public class FluentMappingConfiguration
@@ -53,30 +53,27 @@ namespace NPoco.FluentMappings
                     AutoIncrement = scannerSettings.PrimaryKeysAutoIncremented(type),
                     PrimaryKey = scannerSettings.PrimaryKeysNamed(type),
                     TableName = scannerSettings.TablesNamed(type),
+                    PersistedType = scannerSettings.PersistedTypesBy(type),
                     SequenceName = scannerSettings.SequencesNamed(type),
+                    UseOutputClause = scannerSettings.UseOutputClauseWhere(type),
                     ExplicitColumns = true
                 };
 
-                foreach (var prop in ReflectionUtils.GetFieldsAndPropertiesForClasses(type))
+                foreach (var columnDefinition in GetColumnDefinitions(scannerSettings, type, new List<MemberInfo>()))
                 {
-                    var column = new ColumnDefinition();
-                    column.MemberInfo = prop;
-                    column.DbColumnName = scannerSettings.PropertiesNamed(prop);
-                    column.DbColumnAlias = scannerSettings.AliasNamed(prop);
-                    column.IgnoreColumn = scannerSettings.IgnorePropertiesWhere.Any(x => x.Invoke(prop));
-                    column.DbColumnType = scannerSettings.DbColumnTypesAs(prop);
-                    column.ResultColumn = scannerSettings.ResultPropertiesWhere(prop);
-                    column.ComputedColumn = scannerSettings.ComputedPropertiesWhere(prop);
-                    column.VersionColumn = scannerSettings.VersionPropertiesWhere(prop);
-                    column.ForceUtc = scannerSettings.ForceDateTimesToUtcWhere(prop);
-                    pocoDefn.ColumnConfiguration.Add(prop.Name, column);
+                    var key = PocoColumn.GenerateKey(columnDefinition.MemberInfoChain);
+                    if (!pocoDefn.ColumnConfiguration.ContainsKey(key))
+                        pocoDefn.ColumnConfiguration.Add(key, columnDefinition);
                 }
-
+                
                 config.Add(type, pocoDefn);
             }
 
-            MergeOverrides(config, scannerSettings.MappingOverrides);
-
+            foreach (var mappingOverride in scannerSettings.MappingOverrides)
+            {
+                MergeOverrides(config, mappingOverride);
+            }
+            
             //if (scannerSettings.OverrideWithAttributes)
             //{
             //    MergeAttributeOverrides(config);
@@ -86,6 +83,79 @@ namespace NPoco.FluentMappings
             return pocoMappings;
         }
 
+        private static IEnumerable<ColumnDefinition> GetColumnDefinitions(ConventionScannerSettings scannerSettings, Type type, List<MemberInfo> memberInfos, bool isReferenceProperty = false)
+        {
+            var capturedMembers = memberInfos.ToArray();
+            foreach (var member in ReflectionUtils.GetFieldsAndPropertiesForClasses(type))
+            {
+                var complexProperty = scannerSettings.ComplexPropertiesWhere(member);
+                var referenceProperty = scannerSettings.ReferencePropertiesWhere(member);
+                var dbColumn = scannerSettings.DbColumnWhere(member);
+
+                if ((complexProperty || referenceProperty) && !dbColumn)
+                {
+                    if (capturedMembers.GroupBy(x => x.GetMemberInfoType()).Any(x => x.Count() >= 2))
+                    {
+                        continue;
+                    }
+
+                    var members = new List<MemberInfo>();
+                    members.AddRange(capturedMembers);
+                    members.Add(member);
+
+                    var memberInfoType = member.GetMemberInfoType();
+                    if (PocoDataBuilder.IsList(member))
+                    {
+                        memberInfoType = memberInfoType.GetGenericArguments().First();
+                    }
+
+                    var columnDefinitions = GetColumnDefinitions(scannerSettings, memberInfoType, members, referenceProperty).ToList();
+
+                    foreach (var columnDefinition in columnDefinitions)
+                    {
+                        yield return columnDefinition;
+                    }
+
+                    var referenceDbColumnsNamed = scannerSettings.ReferenceDbColumnsNamed(member);
+
+                    yield return new ColumnDefinition()
+                    {
+                        MemberInfoChain = capturedMembers.Concat(new[] { member }).ToArray(),
+                        MemberInfo = member,
+                        IsComplexMapping = complexProperty,
+                        IsReferenceMember = referenceProperty,
+                        ReferenceType = ReferenceType.None,
+                        ReferenceMember = null,
+                        ResultColumn = scannerSettings.ResultPropertiesWhere(member),
+                        DbColumnName = referenceProperty ? referenceDbColumnsNamed : null,
+                    };
+                }
+                else
+                {
+                    var columnDefinition = new ColumnDefinition();
+                    columnDefinition.MemberInfoChain = capturedMembers.Concat(new[] {member}).ToArray();
+                    columnDefinition.MemberInfo = member;
+
+                    var prefixProperty = isReferenceProperty ? Enumerable.Empty<string>() : capturedMembers.Select(x => scannerSettings.DbColumnsNamed(x));
+                    columnDefinition.DbColumnName = string.Join(PocoData.Separator, prefixProperty.Concat(new[] { scannerSettings.DbColumnsNamed(member) }).ToArray());
+
+                    columnDefinition.DbColumnAlias = scannerSettings.AliasNamed(member);
+                    columnDefinition.IgnoreColumn = scannerSettings.IgnorePropertiesWhere.Any(x => x.Invoke(member));
+                    columnDefinition.DbColumnType = scannerSettings.DbColumnTypesAs(member);
+                    columnDefinition.ResultColumn = scannerSettings.ResultPropertiesWhere(member);
+                    columnDefinition.ComputedColumn = scannerSettings.ComputedPropertiesWhere(member);
+                    columnDefinition.ComputedColumnType = scannerSettings.ComputedPropertyTypeAs(member);
+                    columnDefinition.VersionColumn = scannerSettings.VersionPropertiesWhere(member);
+                    columnDefinition.VersionColumnType = scannerSettings.VersionPropertyTypeAs(member);
+                    columnDefinition.ForceUtc = scannerSettings.ForceDateTimesToUtcWhere(member);
+                    columnDefinition.Serialized = scannerSettings.SerializedWhere(member);
+                    columnDefinition.IsComplexMapping = scannerSettings.ComplexPropertiesWhere(member);
+                    columnDefinition.ValueObjectColumn = scannerSettings.ValueObjectColumnWhere(member);
+                    yield return columnDefinition;
+                }
+            }
+        }
+
         private static ConventionScannerSettings ProcessSettings(Action<IConventionScanner> scanner)
         {
             var defaultScannerSettings = new ConventionScannerSettings
@@ -93,15 +163,26 @@ namespace NPoco.FluentMappings
                 PrimaryKeysAutoIncremented = x => true,
                 PrimaryKeysNamed = x => "ID",
                 TablesNamed = x => x.Name,
-                PropertiesNamed = x => x.Name,
+                DbColumnsNamed = x => x.Name,
+                PersistedTypesBy = x => null,
                 AliasNamed = x => null,
                 DbColumnTypesAs = x => null,
                 ResultPropertiesWhere = x => false,
                 VersionPropertiesWhere = x => false,
+                VersionPropertyTypeAs = x => VersionColumnType.Number,
                 ComputedPropertiesWhere = x => false,
+                ComputedPropertyTypeAs = x => ComputedColumnType.Always,
                 ForceDateTimesToUtcWhere = x => true,
+                ReferencePropertiesWhere = x => x.GetMemberInfoType().IsAClass() && ReflectionUtils.GetCustomAttributes(x, typeof(ReferenceAttribute)).Any(),
+                ComplexPropertiesWhere = x => x.GetMemberInfoType().IsAClass() && ReflectionUtils.GetCustomAttributes(x, typeof(ComplexMappingAttribute)).Any(),
+                ReferenceDbColumnsNamed = x => x.Name + "ID",
                 SequencesNamed = x => null,
-                Lazy = false
+                UseOutputClauseWhere = x => false,
+                SerializedWhere = x => ReflectionUtils.GetCustomAttributes(x, typeof(SerializedColumnAttribute)).Any(),
+                DbColumnWhere = x => ReflectionUtils.GetCustomAttributes(x, typeof(ColumnAttribute)).Any(),
+                ValueObjectColumnWhere = x => x.GetMemberInfoType().GetInterfaces().Any(y => y == typeof(IValueObject)),
+                Lazy = false,
+                MapNestedTypesWhen = x => false
             };
             scanner.Invoke(new ConventionScanner(defaultScannerSettings));
             return defaultScannerSettings;
@@ -115,7 +196,8 @@ namespace NPoco.FluentMappings
             var types = scannerSettings.Assemblies
                 .SelectMany(x => x.GetExportedTypes())
                 .Where(x => scannerSettings.IncludeTypes.All(y => y.Invoke(x)))
-                .Where(x => !x.IsNested && !typeof (Map<>).IsAssignableFrom(x) && !typeof (Mappings).IsAssignableFrom(x));
+                .Where(x => scannerSettings.MapNestedTypesWhen(x) || !x.IsNested)
+                .Where(x => !typeof (Map<>).IsAssignableFrom(x) && !typeof (Mappings).IsAssignableFrom(x));
             return types;
         }
 
@@ -128,6 +210,7 @@ namespace NPoco.FluentMappings
                 typeDefinition.Value.PrimaryKey = tableInfo.PrimaryKey;
                 typeDefinition.Value.SequenceName = tableInfo.SequenceName;
                 typeDefinition.Value.AutoIncrement = tableInfo.AutoIncrement;
+                typeDefinition.Value.UseOutputClause = tableInfo.UseOutputClause;
 
                 foreach (var columnDefinition in typeDefinition.Value.ColumnConfiguration)
                 {
@@ -138,8 +221,12 @@ namespace NPoco.FluentMappings
                     columnDefinition.Value.IgnoreColumn = columnInfo.IgnoreColumn;
                     columnDefinition.Value.ResultColumn = columnInfo.ResultColumn;
                     columnDefinition.Value.ComputedColumn = columnInfo.ComputedColumn;
+                    columnDefinition.Value.ComputedColumnType = columnInfo.ComputedColumnType;
                     columnDefinition.Value.VersionColumn = columnInfo.VersionColumn;
+                    columnDefinition.Value.VersionColumnType = columnInfo.VersionColumnType;
                     columnDefinition.Value.ForceUtc = columnInfo.ForceToUtc;
+                    columnDefinition.Value.Serialized = columnInfo.SerializedColumn;
+                    columnDefinition.Value.ValueObjectColumn = columnInfo.ValueObjectColumn;
                 }
             }
         }
@@ -152,7 +239,10 @@ namespace NPoco.FluentMappings
             foreach (var overrideTypeDefinition in overrideMappings.Config)
             {
                 if (!config.ContainsKey(overrideTypeDefinition.Key))
+                {
+                    config.Add(overrideTypeDefinition.Key, overrideTypeDefinition.Value);
                     continue;
+                }
 
                 var convTableDefinition = config[overrideTypeDefinition.Key];
 
@@ -161,6 +251,8 @@ namespace NPoco.FluentMappings
                 convTableDefinition.TableName = overrideTypeDefinition.Value.TableName ?? convTableDefinition.TableName;
                 convTableDefinition.AutoIncrement = overrideTypeDefinition.Value.AutoIncrement ?? convTableDefinition.AutoIncrement;
                 convTableDefinition.ExplicitColumns = overrideTypeDefinition.Value.ExplicitColumns ?? convTableDefinition.ExplicitColumns;
+                convTableDefinition.UseOutputClause = overrideTypeDefinition.Value.UseOutputClause ?? convTableDefinition.UseOutputClause;
+                convTableDefinition.PersistedType = overrideTypeDefinition.Value.PersistedType ?? convTableDefinition.PersistedType;
 
                 foreach (var overrideColumnDefinition in overrideMappings.Config[overrideTypeDefinition.Key].ColumnConfiguration)
                 {
@@ -172,9 +264,20 @@ namespace NPoco.FluentMappings
                     convColDefinition.IgnoreColumn = overrideColumnDefinition.Value.IgnoreColumn ?? convColDefinition.IgnoreColumn;
                     convColDefinition.ResultColumn = overrideColumnDefinition.Value.ResultColumn ?? convColDefinition.ResultColumn;
                     convColDefinition.ComputedColumn = overrideColumnDefinition.Value.ComputedColumn ?? convColDefinition.ComputedColumn;
+                    convColDefinition.ComputedColumnType = overrideColumnDefinition.Value.ComputedColumnType ?? convColDefinition.ComputedColumnType;
                     convColDefinition.VersionColumn = overrideColumnDefinition.Value.VersionColumn ?? convColDefinition.VersionColumn;
+                    convColDefinition.VersionColumnType = overrideColumnDefinition.Value.VersionColumnType ?? convColDefinition.VersionColumnType;
                     convColDefinition.MemberInfo = overrideColumnDefinition.Value.MemberInfo ?? convColDefinition.MemberInfo;
                     convColDefinition.ForceUtc = overrideColumnDefinition.Value.ForceUtc ?? convColDefinition.ForceUtc;
+                    convColDefinition.IsReferenceMember = overrideColumnDefinition.Value.IsReferenceMember ?? convColDefinition.IsReferenceMember;
+                    convColDefinition.ReferenceMember = overrideColumnDefinition.Value.ReferenceMember ?? convColDefinition.ReferenceMember;
+                    convColDefinition.ReferenceType = overrideColumnDefinition.Value.ReferenceType ?? convColDefinition.ReferenceType;
+                    convColDefinition.Serialized = overrideColumnDefinition.Value.Serialized ?? convColDefinition.Serialized;
+                    convColDefinition.ComplexPrefix = overrideColumnDefinition.Value.ComplexPrefix ?? convColDefinition.ComplexPrefix;
+                    convColDefinition.IsComplexMapping = overrideColumnDefinition.Value.IsComplexMapping ?? convColDefinition.IsComplexMapping;
+                    convColDefinition.ValueObjectColumn = overrideColumnDefinition.Value.ValueObjectColumn ?? convColDefinition.ValueObjectColumn;
+                    convColDefinition.ValueObjectColumnName = overrideColumnDefinition.Value.ValueObjectColumnName ?? convColDefinition.ValueObjectColumnName;
+                    convColDefinition.ExactColumnNameMatch = overrideColumnDefinition.Value.ExactColumnNameMatch ?? convColDefinition.ExactColumnNameMatch;
                 }
             }
         }
@@ -183,24 +286,24 @@ namespace NPoco.FluentMappings
         {
             var maps = mappings;
             var scana = scanner;
-            return new FluentConfig(mapper => new PocoDataFactory(t =>
+            return new FluentConfig(mapper => new FluentPocoDataFactory((t, pocoDataFactory) =>
             {
                 if (maps != null)
                 {
                     if (maps.Config.ContainsKey(t))
                     {
-                        return new FluentMappingsPocoData(t, mappings.Config[t], mapper);
+                        return new FluentMappingsPocoDataBuilder(t, mappings, mapper).Init();
                     }
 
                     if (scana != null)
                     {
                         var settings = ProcessSettings(scana);
                         var typeMapping = CreateMappings(settings, new[] { t });
-                        return new FluentMappingsPocoData(t, typeMapping.Config[t], mapper);
+                        return new FluentMappingsPocoDataBuilder(t, typeMapping, mapper).Init();
                     }
                 }
-                return new PocoData(t, mapper);
-            }));
+                return new PocoDataBuilder(t, mapper).Init();
+            }, mapper));
         }
 
         // Helper method if code is in seperate assembly

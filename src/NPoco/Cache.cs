@@ -6,18 +6,21 @@ using System.Threading;
 
 namespace NPoco
 {
-    internal class Cache<TKey, TValue>
+    public class Cache<TKey, TValue>
     {
-        Dictionary<TKey, TValue> _map = new Dictionary<TKey, TValue>();
-        ReaderWriterLockSlim _lock = new ReaderWriterLockSlim();
-
-        public int Count
+        /// <summary>
+        /// Creates a cache that uses static storage
+        /// </summary>
+        /// <returns></returns>
+        public static Cache<TKey, TValue> CreateStaticCache()
         {
-            get
-            {
-                return _map.Count;
-            }
+            return new Cache<TKey, TValue>();
         }
+
+        readonly Dictionary<TKey, TValue> _map = new Dictionary<TKey, TValue>();
+        readonly ReaderWriterLockSlim _lock = new ReaderWriterLockSlim();
+        
+        public int Count => _map.Count;
 
         public TValue Get(TKey key, Func<TValue> factory)
         {
@@ -33,7 +36,6 @@ namespace NPoco
             {
                 _lock.ExitReadLock();
             }
-
 
             // Cache it
             _lock.EnterWriteLock();
@@ -51,6 +53,32 @@ namespace NPoco
 
                 // Done
                 return val;
+            }
+            finally
+            {
+                _lock.ExitWriteLock();
+            }
+        }
+
+        public bool AddIfNotExists(TKey key, TValue value)
+        {
+            // Cache it
+            _lock.EnterWriteLock();
+            try
+            {
+                // Check again
+                TValue val;
+                if (_map.TryGetValue(key, out val))
+                    return true;
+
+                // Create it
+                val = value;
+
+                // Store it
+                _map.Add(key, val);
+
+                // Done
+                return false;
             }
             finally
             {

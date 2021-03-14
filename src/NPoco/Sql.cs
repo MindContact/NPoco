@@ -7,9 +7,10 @@ namespace NPoco
 {
     public class Sql
     {
+        public bool ReuseParameters { get; set; }
+
         public Sql()
-        {
-        }
+        { }
 
         public Sql(string sql, params object[] args)
         {
@@ -21,17 +22,14 @@ namespace NPoco
         {
             _sql = sql;
             _args = args;
-            if (isBuilt)
-            {
-                _sqlFinal = _sql;
-                _argsFinal = _args;
-            }
+
+            if (!isBuilt) return;
+
+            _sqlFinal = _sql;
+            _argsFinal = _args;
         }
 
-        public static Sql Builder
-        {
-            get { return new Sql(); }
-        }
+        public static Sql Builder => new Sql();
 
         string _sql;
         object[] _args;
@@ -73,8 +71,7 @@ namespace NPoco
 
         public Sql Append(Sql sql)
         {
-            if (_sqlFinal != null)
-                _sqlFinal = null;
+            _sqlFinal = null;
 
             if (_rhs != null)
             {
@@ -94,27 +91,32 @@ namespace NPoco
             return this;
         }
 
+        public Sql Concat(Sql sql, string delimiter)
+        {
+            sql._sql = delimiter + sql._sql;
+            return Append(sql);
+        }
+
         public Sql Append(string sql, params object[] args)
         {
-            return Append(new Sql(sql, args));
+            Append(new Sql(sql, args));
+            return this;
         }
 
         static bool Is(Sql sql, string sqltype)
         {
-            return sql != null && sql._sql != null && sql._sql.StartsWith(sqltype, StringComparison.InvariantCultureIgnoreCase);
+            return sql?._sql != null && sql._sql.StartsWith(sqltype, StringComparison.OrdinalIgnoreCase);
         }
 
         private void Build(StringBuilder sb, List<object> args, Sql lhs)
         {
-            if (!String.IsNullOrEmpty(_sql))
+            if (!string.IsNullOrEmpty(_sql))
             {
-                // Add SQL to the string
+                // add SQL to the string
                 if (sb.Length > 0)
-                {
                     sb.Append("\n");
-                }
 
-                var sql = ParameterHelper.ProcessParams(_sql, _args, args);
+                var sql = ParameterHelper.ProcessParams(_sql, _args, args, ReuseParameters);
 
                 if (Is(lhs, "WHERE ") && Is(this, "WHERE "))
                     sql = "AND " + sql.Substring(6);
@@ -124,43 +126,49 @@ namespace NPoco
                 sb.Append(sql);
             }
 
-            // Now do rhs
-            if (_rhs != null)
-                _rhs.Build(sb, args, this);
+            // now do rhs
+            _rhs?.Build(sb, args, this);
         }
 
         public Sql Where(string sql, params object[] args)
         {
-            return Append(new Sql("WHERE (" + sql + ")", args));
+            Append("WHERE (" + sql + ")", args);
+            return this;
         }
 
         public Sql OrderBy(params object[] columns)
         {
-            return Append(new Sql("ORDER BY " + String.Join(", ", (from x in columns select x.ToString()).ToArray())));
+            Append("ORDER BY " + string.Join(", ", columns));
+            return this;
         }
 
         public Sql Select(params object[] columns)
         {
-            return Append(new Sql("SELECT " + String.Join(", ", (from x in columns select x.ToString()).ToArray())));
+            Append("SELECT " + string.Join(", ", columns));
+            return this;
         }
 
         public Sql From(params object[] tables)
         {
-            return Append(new Sql("FROM " + String.Join(", ", (from x in tables select x.ToString()).ToArray())));
+            Append("FROM " + string.Join(", ", tables));
+            return this;
         }
 
         public Sql GroupBy(params object[] columns)
         {
-            return Append(new Sql("GROUP BY " + String.Join(", ", (from x in columns select x.ToString()).ToArray())));
+            Append("GROUP BY " + string.Join(", ", columns));
+            return this;
         }
 
-        private SqlJoinClause Join(string JoinType, string table)
+        private SqlJoinClause Join(string joinType, string table)
         {
-            return new SqlJoinClause(Append(new Sql(JoinType + table)));
+            Append(joinType + table);
+            return new SqlJoinClause(this);
         }
 
         public SqlJoinClause InnerJoin(string table) { return Join("INNER JOIN ", table); }
         public SqlJoinClause LeftJoin(string table) { return Join("LEFT JOIN ", table); }
+        public SqlJoinClause RightJoin(string table) { return Join("RIGHT JOIN ", table); }
 
         public class SqlJoinClause
         {
@@ -173,13 +181,19 @@ namespace NPoco
 
             public Sql On(string onClause, params object[] args)
             {
-                return _sql.Append("ON " + onClause, args);
+                _sql.Append("ON " + onClause, args);
+                return _sql;
             }
         }
 
         public static implicit operator Sql(SqlBuilder.Template template)
         {
             return new Sql(true, template.RawSql, template.Parameters);
+        }
+
+        public static Sql<TContext> BuilderFor<TContext>(TContext context)
+        {
+            return new Sql<TContext>(context);
         }
     }
 }

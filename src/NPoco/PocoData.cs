@@ -1,99 +1,78 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Data.Common;
 using System.Linq;
-using System.Linq.Expressions;
-using System.Reflection;
-using System.Reflection.Emit;
-using System.Text;
 
 namespace NPoco
 {
     public class PocoData
     {
-        protected internal IMapper Mapper;
-        internal bool EmptyNestedObjectNull;
-        private static readonly ThreadSafeDictionary<string, Type> AliasToType = new ThreadSafeDictionary<string, Type>();
-     
-        protected internal Type type;
-        public KeyValuePair<string, PocoColumn>[] QueryColumns { get; protected set; }
+        public static string Separator = "__";
+
+        public Type Type { get; private set; }
+        public MapperCollection Mapper { get; private set; }
+
+        public KeyValuePair<string, PocoColumn>[] QueryColumns { get; protected internal set; }
         public TableInfo TableInfo { get; protected internal set; }
         public Dictionary<string, PocoColumn> Columns { get; protected internal set; }
-        private readonly MappingFactory _mappingFactory;
+        public List<PocoMember> Members { get; protected internal set; }
+        private IFastCreate CreateDelegate { get; }
 
-        public MappingFactory MappingFactory
-        {
-            get { return _mappingFactory; }
-        }
+        // This is used on a per query basis, if we have cache PocoData then this will need to change.
+        public bool IsQueryGenerated { get; set; }
 
-        public PocoData()
+        public PocoData(Type type, MapperCollection mapper, IFastCreate creator)
         {
-            _mappingFactory = new MappingFactory(this);
-        }
-
-        public PocoData(Type t, IMapper mapper) : this()
-        {
-            type = t;
+            CreateDelegate = creator;
+            Type = type;
             Mapper = mapper;
-            TableInfo = TableInfo.FromPoco(t);
-
-            // Call column mapper
-            if (Mapper != null)
-                Mapper.GetTableInfo(t, TableInfo);
-
-            var alias = CreateAlias(type.Name, type);
-            TableInfo.AutoAlias = alias;
-            var index = 0;
-            
-            // Work out bound properties
-            Columns = new Dictionary<string, PocoColumn>(StringComparer.OrdinalIgnoreCase);
-            foreach (var mi in ReflectionUtils.GetFieldsAndPropertiesForClasses(t))
-            {
-                ColumnInfo ci = ColumnInfo.FromMemberInfo(mi);
-                if (ci.IgnoreColumn)
-                    continue;
-
-                var pc = new PocoColumn();
-                pc.TableInfo = TableInfo;
-                pc.MemberInfo = mi;
-                pc.ColumnName = ci.ColumnName;
-                pc.ResultColumn = ci.ResultColumn;
-                pc.ForceToUtc = ci.ForceToUtc;
-                pc.ComputedColumn = ci.ComputedColumn;
-                pc.ColumnType = ci.ColumnType;
-                pc.ColumnAlias = ci.ColumnAlias;
-                pc.VersionColumn = ci.VersionColumn;
-
-                if (Mapper != null && !Mapper.MapMemberToColumn(mi, ref pc.ColumnName, ref pc.ResultColumn))
-                    continue;
-                
-                pc.AutoAlias = alias + "_" + index++;
-
-                // Store it
-                Columns.Add(pc.ColumnName, pc);
-            }
-
-            // Build column list for automatic select
-            QueryColumns = Columns.Where(c => !c.Value.ResultColumn).ToArray();
+        }
+        
+        public object[] GetPrimaryKeyValues(object obj)
+        {
+            return PrimaryKeyValues(obj);
         }
 
-        protected string CreateAlias(string typeName, Type typeIn)
+        public IEnumerable<PocoMember> GetAllMembers()
         {
-            string alias;
-            int i = 0;
-            bool result = false;
-            string name = string.Join(string.Empty, typeName.BreakUpCamelCase().Split(' ').Select(x => x.Substring(0, 1)).ToArray());
-            do
-            {
-                alias = name + (i == 0 ? string.Empty : i.ToString());
-                i++;
-                if (AliasToType.ContainsKey(alias))
-                    continue;
-                AliasToType.Add(alias, typeIn);
-                result = true;
-            } while (result == false);
+            return GetAllMembers(Members);
+        }
 
-            return alias;
+        private IEnumerable<PocoMember> GetAllMembers(IEnumerable<PocoMember> pocoMembers)
+        {
+            foreach (var member in pocoMembers)
+            {
+                yield return member;
+                foreach(var childmember in GetAllMembers(member.PocoMemberChildren))
+                {
+                    yield return childmember;
+                }
+            }
+        }
+
+        private Func<object, object[]> _primaryKeyValues;
+        private Func<object, object[]> PrimaryKeyValues
+        {
+            get
+            {
+                if (_primaryKeyValues == null)
+                {
+                    var multiplePrimaryKeysNames = TableInfo.PrimaryKey.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(x => x.Trim()).ToArray();
+                    var members = multiplePrimaryKeysNames
+                        .Select(x => Members.FirstOrDefault(y => y.PocoColumn != null
+                                && y.ReferenceType == ReferenceType.None
+                                && string.Equals(x, y.PocoColumn.ColumnName, StringComparison.OrdinalIgnoreCase)))
+                        .Where(x => x != null);
+                    _primaryKeyValues = obj => members.Select(x => x.PocoColumn.GetValue(obj)).ToArray();
+                }
+                return _primaryKeyValues;
+            }
+        }
+
+        public object CreateObject(DbDataReader dataReader)
+        {
+            return CreateDelegate.Create(dataReader);
         }
     }
 }

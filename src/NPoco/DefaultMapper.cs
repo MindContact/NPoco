@@ -1,17 +1,12 @@
 using System;
+using System.Data;
+using System.Data.Common;
 using System.Reflection;
 
 namespace NPoco
 {
     public abstract class DefaultMapper : IMapper
     {
-        public virtual void GetTableInfo(Type t, TableInfo ti) { }
- 
-        public virtual bool MapMemberToColumn(MemberInfo pi, ref string columnName, ref bool resultColumn)
-        {
-            return true;
-        }
-
         public virtual Func<object, object> GetFromDbConverter(MemberInfo destMemberInfo, Type sourceType)
         {
             var type = destMemberInfo.GetMemberInfoType();
@@ -25,16 +20,10 @@ namespace NPoco
 
         public virtual Func<object, object> GetToDbConverter(Type destType, MemberInfo sourceMemberInfo)
         {
-            var type = sourceMemberInfo.GetMemberInfoType();
-            return sourceMemberInfo != null ? GetToDbConverter(destType, type) : null;
-        }
-
-        public virtual Func<object, object> GetToDbConverter(Type destType, Type SourceType)
-        {
             return null;
         }
 
-        public virtual Func<object, object> GetParameterConverter(Type sourceType)
+        public virtual Func<object, object> GetParameterConverter(DbCommand dbCommand, Type sourceType)
         {
             return null;
         }
